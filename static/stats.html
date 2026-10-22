@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>统计结果 - 问卷系统</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="nav">
+    <span class="brand"><a href="/dashboard" style="text-decoration:none;color:inherit;">问卷系统</a></span>
+    <span><button class="btn small" onclick="location.href='/editor?sid=${qs("sid")}'">编辑问卷</button>
+    <button class="btn small" onclick="location.href='/dashboard'">返回列表</button></span>
+  </div>
+  <div class="card">
+    <h2 id="sTitle">统计结果</h2>
+    <p class="muted">总答卷数：<span class="stat-num" id="total">0</span> 份（统计由 MongoDB 聚合实时计算）</p>
+  </div>
+  <div id="stats"></div>
+</div>
+<script src="/static/js/common.js"></script>
+<script>
+const sid = qs("sid");
+async function load() {
+  const s = await api(`/api/surveys/${sid}`);
+  document.getElementById("sTitle").textContent = "统计结果：" + s.survey.title;
+  const d = await api(`/api/surveys/${sid}/stats`);
+  document.getElementById("total").textContent = d.total_responses;
+  const box = document.getElementById("stats");
+  box.innerHTML = "";
+  if (!d.questions.length) {
+    box.innerHTML = `<div class="card muted">该问卷还没有题目</div>`;
+    return;
+  }
+  d.questions.forEach((q, i) => box.appendChild(renderStat(q, i)));
+}
+function renderStat(q, i) {
+  const div = document.createElement("div");
+  div.className = "card";
+  let inner = `<h2>${i + 1}. ${esc(q.title)} <span class="tag">${typeName(q.type)}</span></h2>
+    <p class="muted">共 ${q.total} 人回答本题</p>`;
+  if (q.type === "single" || q.type === "multiple") {
+    const max = Math.max(1, ...q.options.map(o => o.count));
+    inner += `<table><thead><tr><th>选项</th><th>人数</th><th style="width:40%;">占比</th></tr></thead><tbody>`;
+    q.options.forEach(o => {
+      const pct = q.total ? (o.count / q.total * 100).toFixed(1) : "0.0";
+      inner += `<tr><td>${esc(o.text)}</td><td>${o.count}</td>
+        <td><div class="bar"><div style="width:${(o.count / max * 100).toFixed(1)}%"></div></div> ${pct}%</td></tr>`;
+    });
+    inner += `</tbody></table>`;
+    if (q.type === "multiple") inner += `<p class="muted">选项被选择总次数：${q.total_selections}</p>`;
+  } else if (q.type === "text") {
+    const texts = q.texts || [];
+    inner += texts.length
+      ? `<ul style="margin-left:18px;">${texts.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`
+      : `<p class="muted">暂无填写内容</p>`;
+  } else if (q.type === "number") {
+    inner += `<div class="row">
+      <div><div class="stat-num">${q.answered}</div><div class="muted">有效填写</div></div>
+      <div><div class="stat-num">${q.avg ?? "-"}</div><div class="muted">平均值</div></div>
+      <div><div class="stat-num">${q.min ?? "-"}</div><div class="muted">最小值</div></div>
+      <div><div class="stat-num">${q.max ?? "-"}</div><div class="muted">最大值</div></div>
+    </div>`;
+  }
+  div.innerHTML = inner;
+  return div;
+}
+function typeName(t) {
+  return { single: "单选题", multiple: "多选题", text: "文本填空", number: "数字填空" }[t] || t;
+}
+load();
+</script>
+</body>
+</html>

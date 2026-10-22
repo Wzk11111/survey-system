@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>登录 / 注册 - 问卷系统</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="card" style="max-width:420px;margin:60px auto;">
+    <h1 class="center">问卷系统</h1>
+    <p class="muted center">基于 MongoDB 的在线问卷系统</p>
+
+    <div class="row" style="margin-top:16px;">
+      <button id="tabLogin" class="btn primary grow">登录</button>
+      <button id="tabReg" class="btn grow">注册</button>
+    </div>
+
+    <div id="loginForm">
+      <label>用户名</label>
+      <input type="text" id="loginUser" autocomplete="username">
+      <label>密码</label>
+      <input type="password" id="loginPass" autocomplete="current-password">
+      <div class="alert error hidden" id="loginErr"></div>
+      <div style="margin-top:16px;">
+        <button class="btn primary" id="btnLogin" style="width:100%;">登 录</button>
+      </div>
+    </div>
+
+    <div id="regForm" class="hidden">
+      <label>用户名（2-20 位字母/数字/下划线/中文）</label>
+      <input type="text" id="regUser" autocomplete="username">
+      <label>密码（至少 6 位）</label>
+      <input type="password" id="regPass" autocomplete="new-password">
+      <div class="alert error hidden" id="regErr"></div>
+      <div style="margin-top:16px;">
+        <button class="btn success" id="btnReg" style="width:100%;">注 册</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/static/js/common.js"></script>
+<script>
+async function tryLogin() {
+  const user = document.getElementById("loginUser").value.trim();
+  const pass = document.getElementById("loginPass").value;
+  try {
+    await api("/api/login", "POST", { username: user, password: pass });
+    location.href = "/dashboard";
+  } catch (e) {
+    const el = document.getElementById("loginErr");
+    el.textContent = e.message; el.classList.remove("hidden");
+  }
+}
+async function tryReg() {
+  const user = document.getElementById("regUser").value.trim();
+  const pass = document.getElementById("regPass").value;
+  try {
+    await api("/api/register", "POST", { username: user, password: pass });
+    await api("/api/login", "POST", { username: user, password: pass });
+    location.href = "/dashboard";
+  } catch (e) {
+    const el = document.getElementById("regErr");
+    el.textContent = e.message; el.classList.remove("hidden");
+  }
+}
+document.getElementById("btnLogin").onclick = tryLogin;
+document.getElementById("btnReg").onclick = tryReg;
+document.getElementById("loginPass").onkeydown = e => { if (e.key === "Enter") tryLogin(); };
+document.getElementById("regPass").onkeydown = e => { if (e.key === "Enter") tryReg(); };
+document.getElementById("tabLogin").onclick = () => {
+  document.getElementById("tabLogin").classList.add("primary");
+  document.getElementById("tabReg").classList.remove("primary");
+  document.getElementById("loginForm").classList.remove("hidden");
+  document.getElementById("regForm").classList.add("hidden");
+};
+document.getElementById("tabReg").onclick = () => {
+  document.getElementById("tabReg").classList.add("primary");
+  document.getElementById("tabLogin").classList.remove("primary");
+  document.getElementById("regForm").classList.remove("hidden");
+  document.getElementById("loginForm").classList.add("hidden");
+};
+// 已登录则直接进入
+api("/api/me").then(d => { if (d.ok) location.href = "/dashboard"; }).catch(() => {});
+</script>
+</body>
+</html>

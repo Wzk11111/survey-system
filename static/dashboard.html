@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>我的问卷 - 问卷系统</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="nav">
+    <span class="brand">问卷系统</span>
+    <span><span id="whoami"></span> <button class="btn small" onclick="logout()">退出</button></span>
+  </div>
+
+  <div class="card">
+    <h2>创建问卷</h2>
+    <label>问卷标题 *</label>
+    <input type="text" id="newTitle" placeholder="例如：校园生活满意度调查">
+    <label>问卷说明</label>
+    <textarea id="newDesc" placeholder="对问卷的简单介绍（可选）"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <label style="margin:0;display:flex;align-items:center;gap:6px;font-weight:400;">
+        <input type="checkbox" id="newAnon" style="width:auto;"> 允许匿名填写（不记录填写人身份）
+      </label>
+      <div class="grow"></div>
+      <button class="btn primary" onclick="createSurvey()">创建</button>
+    </div>
+    <div class="alert error hidden" id="err"></div>
+  </div>
+
+  <div class="card">
+    <h2>我的问卷</h2>
+    <div id="list"></div>
+    <p class="muted center hidden" id="empty">还没有问卷，先创建一份吧</p>
+  </div>
+</div>
+<script src="/static/js/common.js"></script>
+<script>
+async function load() {
+  const me = await api("/api/me");
+  document.getElementById("whoami").textContent = "你好，" + me.username;
+  const data = await api("/api/surveys");
+  const box = document.getElementById("list");
+  box.innerHTML = "";
+  document.getElementById("empty").classList.toggle("hidden", data.surveys.length > 0);
+  for (const s of data.surveys) {
+    const div = document.createElement("div");
+    div.className = "survey-item";
+    const link = s.status === "published"
+      ? `<div class="link-box">填写链接：${location.origin}/survey/${esc(s.sid)}</div>` : "";
+    div.innerHTML = `
+      <div class="title">${esc(s.title)} <span class="tag ${esc(s.status)}">${{draft:"草稿",published:"已发布",closed:"已关闭"}[s.status]}</span></div>
+      <div class="meta">${s.question_count} 题 · ${s.response_count} 份答卷 · 创建于 ${fmtDate(s.created_at)} · 截止 ${fmtDate(s.deadline)}${s.allow_anonymous ? " · 匿名填写" : ""}</div>
+      ${link}
+      <div class="row" style="margin-top:8px;">
+        <a class="btn small" href="/editor?sid=${esc(s.sid)}">编辑题目</a>
+        <a class="btn small" href="/stats?sid=${esc(s.sid)}">统计结果</a>
+        ${s.status === "draft" ? `<button class="btn small success" onclick="pub('${s.sid}')">发布</button>` : ""}
+        ${s.status === "published" ? `<button class="btn small danger" onclick="closeIt('${s.sid}')">关闭</button>` : ""}
+        <button class="btn small danger" onclick="del('${s.sid}')">删除</button>
+      </div>`;
+    box.appendChild(div);
+  }
+}
+async function createSurvey() {
+  const title = document.getElementById("newTitle").value.trim();
+  const description = document.getElementById("newDesc").value.trim();
+  const allow_anonymous = document.getElementById("newAnon").checked;
+  try {
+    const d = await api("/api/surveys", "POST", { title, description, allow_anonymous });
+    location.href = "/editor?sid=" + d.sid;
+  } catch (e) { showErr(e.message); }
+}
+async function pub(sid) {
+  try { await api(`/api/surveys/${sid}/publish`, "POST"); load(); }
+  catch (e) { showErr(e.message); }
+}
+async function closeIt(sid) {
+  try { await api(`/api/surveys/${sid}/close`, "POST"); load(); }
+  catch (e) { showErr(e.message); }
+}
+async function del(sid) {
+  if (!confirm("确定删除该问卷及其全部答卷？")) return;
+  try { await api(`/api/surveys/${sid}`, "DELETE"); load(); }
+  catch (e) { showErr(e.message); }
+}
+function showErr(msg) {
+  const el = document.getElementById("err");
+  el.textContent = msg; el.classList.remove("hidden");
+}
+async function logout() {
+  await api("/api/logout", "POST");
+  location.href = "/";
+}
+load();
+</script>
+</body>
+</html>

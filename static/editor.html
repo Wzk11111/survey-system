@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>问卷编辑 - 问卷系统</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="nav">
+    <span class="brand"><a href="/dashboard" style="text-decoration:none;color:inherit;">问卷系统</a></span>
+    <span><button class="btn small" onclick="location.href='/dashboard'">返回列表</button></span>
+  </div>
+
+  <div class="card">
+    <h2 id="sTitle">问卷编辑</h2>
+    <div class="alert error hidden" id="err"></div>
+    <label>问卷标题 *</label>
+    <input type="text" id="fTitle">
+    <label>问卷说明</label>
+    <textarea id="fDesc"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <label style="margin:0;display:flex;align-items:center;gap:6px;font-weight:400;">
+        <input type="checkbox" id="fAnon" style="width:auto;"> 允许匿名填写
+      </label>
+      <label style="margin:0;">截止时间 <input type="datetime-local" id="fDeadline" style="width:auto;"></label>
+      <div class="grow"></div>
+      <button class="btn" onclick="saveMeta()">保存设置</button>
+      <button class="btn success" id="btnPub" onclick="pub()">发布</button>
+      <button class="btn danger hidden" id="btnClose" onclick="closeIt()">关闭</button>
+    </div>
+    <div class="link-box hidden" id="linkBox"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:10px;">
+      <h2 style="margin:0;">题目</h2>
+      <div class="grow"></div>
+      <select id="addType" style="width:auto;">
+        <option value="single">单选题</option>
+        <option value="multiple">多选题</option>
+        <option value="text">填空题（文本）</option>
+        <option value="number">填空题（数字）</option>
+      </select>
+      <button class="btn primary" onclick="addQuestion()">添加题目</button>
+    </div>
+    <div id="qlist"></div>
+    <p class="muted hidden center" id="qempty">还没有题目，点击"添加题目"开始</p>
+  </div>
+</div>
+<script src="/static/js/common.js"></script>
+<script>
+let SURVEY = null;
+const sid = qs("sid");
+
+async function load() {
+  const d = await api(`/api/surveys/${sid}`);
+  SURVEY = d.survey;
+  document.getElementById("sTitle").textContent = SURVEY.title;
+  document.getElementById("fTitle").value = SURVEY.title;
+  document.getElementById("fDesc").value = SURVEY.description || "";
+  document.getElementById("fAnon").checked = !!SURVEY.allow_anonymous;
+  document.getElementById("fDeadline").value = SURVEY.deadline ? SURVEY.deadline.slice(0, 16) : "";
+  renderStatus();
+  renderQuestions();
+}
+function renderStatus() {
+  const st = SURVEY.status;
+  document.getElementById("btnPub").classList.toggle("hidden", st !== "draft");
+  document.getElementById("btnClose").classList.toggle("hidden", st !== "published");
+  const box = document.getElementById("linkBox");
+  if (st === "published") {
+    box.classList.remove("hidden");
+    box.textContent = "填写链接：" + location.origin + "/survey/" + SURVEY.sid;
+  } else box.classList.add("hidden");
+}
+function renderQuestions() {
+  const box = document.getElementById("qlist");
+  box.innerHTML = "";
+  document.getElementById("qempty").classList.toggle("hidden", (SURVEY.questions || []).length > 0);
+  (SURVEY.questions || []).forEach((q, idx) => box.appendChild(questionBlock(q, idx)));
+}
+function typeName(t) {
+  return { single: "单选题", multiple: "多选题", text: "文本填空", number: "数字填空" }[t] || t;
+}
+function questionBlock(q, idx) {
+  const div = document.createElement("div");
+  div.className = "q-block";
+  const optText = (q.options || []).map(o => esc(o.text)).join(" / ");
+  const v = q.validation || {};
+  let vText = "";
+  if (q.type === "multiple") {
+    const bits = [];
+    if (v.min_select !== undefined) bits.push("至少 " + v.min_select + " 个");
+    if (v.max_select !== undefined) bits.push("最多 " + v.max_select + " 个");
+    if (v.exact_select !== undefined) bits.push("必须 " + v.exact_select + " 个");
+    vText = bits.length ? "，" + bits.join("，") : "";
+  } else if (q.type === "text") {
+    const bits = [];
+    if (v.min_len !== undefined) bits.push("最少 " + v.min_len + " 字");
+    if (v.max_len !== undefined) bits.push("最多 " + v.max_len + " 字");
+    vText = bits.length ? "，" + bits.join("，") : "";
+  } else if (q.type === "number") {
+    const bits = [];
+    if (v.min !== undefined) bits.push("≥" + v.min);
+    if (v.max !== undefined) bits.push("≤" + v.max);
+    if (v.integer) bits.push("整数");
+    vText = bits.length ? "，" + bits.join("，") : "";
+  }
+  const jumpText = (q.jumps || []).map(j => jumpDesc(q, j)).join("；");
+  div.innerHTML = `
+    <div class="q-head">
+      <span class="q-title">${idx + 1}. ${esc(q.title)} <span class="tag">${typeName(q.type)}</span> ${q.required ? '<span class="tag">必答</span>' : ""}</span>
+      <span>
+        <button class="btn small" onclick="editQuestion('${esc(q.qid)}')">编辑</button>
+        <button class="btn small danger" onclick="delQuestion('${esc(q.qid)}')">删除</button>
+      </span>
+    </div>
+    ${q.type !== "text" && q.type !== "number" ? `<div class="muted">选项：${optText || "-"}</div>` : ""}
+    <div class="muted">校验：${vText.slice(1) || "无"}</div>
+    ${jumpText ? `<div class="muted">跳转：${jumpText}</div>` : ""}
+    <div id="edit-${esc(q.qid)}"></div>`;
+  return div;
+}
+function jumpDesc(q, j) {
+  const c = j.condition;
+  const t = questionTitle(j.target_qid);
+  if (q.type === "single") return `选「${optionText(q, c.option_id)}」→ ${t}`;
+  if (q.type === "multiple") return `选择${c.not_contains && c.not_contains.length ? "不包含" : "包含"}「${(c.contains || c.not_contains || []).map(x => optionText(q, x)).join("、")}」→ ${t}`;
+  if (q.type === "number") return `${c.op} ${c.value} → ${t}`;
+  return "";
+}
+function questionTitle(qid) {
+  const q = (SURVEY.questions || []).find(x => x.qid === qid);
+  return q ? (q.title || "未命名") : "(已删除题目)";
+}
+function optionText(q, oid) {
+  const o = (q.options || []).find(x => x.oid === oid);
+  return o ? o.text : oid;
+}
+
+// ---------- 新增题目 ----------
+async function addQuestion() {
+  const type = document.getElementById("addType").value;
+  const base = { type, title: "新题目", required: false };
+  if (type === "single" || type === "multiple") {
+    base.options = [{ oid: "o1", text: "选项一" }, { oid: "o2", text: "选项二" }];
+    if (type === "multiple") base.validation = {};
+  } else base.validation = {};
+  try {
+    const d = await api(`/api/surveys/${sid}/questions`, "POST", base);
+    await load();
+    editQuestion(d.qid);
+  } catch (e) { showErr(e.message); }
+}
+
+// ---------- 编辑题目 ----------
+function editQuestion(qid) {
+  const q = SURVEY.questions.find(x => x.qid === qid);
+  const holder = document.getElementById("edit-" + qid);
+  if (holder.innerHTML) { holder.innerHTML = ""; return; }
+  const t = q.type;
+  let body = "";
+  body += `<label>题干 *</label><input type="text" id="e-title" value="${esc(q.title)}">`;
+  body += `<label style="display:flex;align-items:center;gap:6px;font-weight:400;"><input type="checkbox" id="e-required" style="width:auto;" ${q.required ? "checked" : ""}> 必答题</label>`;
+
+  if (t === "single" || t === "multiple") {
+    body += `<label>选项</label><div id="e-options">`;
+    (q.options || []).forEach((o, i) => {
+      body += `<div class="option-line" data-oid="${esc(o.oid)}">
+        <input type="text" class="grow opt-text" value="${esc(o.text)}">
+        <button class="btn small danger" onclick="this.parentNode.remove()">删</button></div>`;
+    });
+    body += `</div><button class="btn small" onclick="addOpt()">+ 添加选项</button>`;
+    if (t === "multiple") {
+      const v = q.validation || {};
+      body += `<div class="row" style="margin-top:8px;">
+        <label style="margin:0;">至少选 <input type="number" id="e-min" style="width:70px;" value="${v.min_select ?? ""}"></label>
+        <label style="margin:0;">最多选 <input type="number" id="e-max" style="width:70px;" value="${v.max_select ?? ""}"></label>
+        <label style="margin:0;">必须选 <input type="number" id="e-exact" style="width:70px;" value="${v.exact_select ?? ""}"></label>
+      </div>`;
+    }
+  } else if (t === "text") {
+    const v = q.validation || {};
+    body += `<div class="row" style="margin-top:8px;">
+      <label style="margin:0;">最少 <input type="number" id="e-min" style="width:70px;" value="${v.min_len ?? ""}"> 字</label>
+      <label style="margin:0;">最多 <input type="number" id="e-max" style="width:70px;" value="${v.max_len ?? ""}"> 字</label>
+    </div>`;
+  } else if (t === "number") {
+    const v = q.validation || {};
+    body += `<div class="row" style="margin-top:8px;">
+      <label style="margin:0;">最小值 <input type="number" id="e-min" style="width:90px;" value="${v.min ?? ""}"></label>
+      <label style="margin:0;">最大值 <input type="number" id="e-max" style="width:90px;" value="${v.max ?? ""}"></label>
+      <label style="margin:0;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="e-int" style="width:auto;" ${v.integer ? "checked" : ""}> 必须是整数</label>
+    </div>`;
+  }
+
+  body += `<div id="jumps-box"></div>`;
+  body += `<div style="margin-top:14px;">
+    <button class="btn primary" onclick="saveQuestion('${esc(qid)}')">保存题目</button>
+    <button class="btn" onclick="document.getElementById('edit-${esc(qid)}').innerHTML=''">取消</button>
+  </div>`;
+  holder.innerHTML = body;
+  renderJumps(qid);
+}
+
+function addOpt() {
+  const box = document.getElementById("e-options");
+  const div = document.createElement("div");
+  div.className = "option-line";
+  div.innerHTML = `<input type="text" class="grow opt-text" placeholder="选项内容">
+    <button class="btn small danger" onclick="this.parentNode.remove()">删</button>`;
+  box.appendChild(div);
+}
+
+function renderJumps(qid) {
+  const q = SURVEY.questions.find(x => x.qid === qid);
+  const box = document.getElementById("jumps-box");
+  const others = (SURVEY.questions || []).filter(x => x.qid !== qid);
+  if (!others.length) { box.innerHTML = `<label>跳转规则</label><p class="muted">需要至少两个题目才能设置跳转（请先保存并添加其他题目）</p>`; return; }
+  let html = `<label>跳转规则（按顺序匹配，命中即跳转）</label><div id="jump-rows">`;
+  (q.jumps || []).forEach((j, i) => html += jumpRow(q, j, others, i));
+  html += `</div><button class="btn small" onclick="addJump('${esc(qid)}')">+ 添加跳转规则</button>`;
+  box.innerHTML = html;
+}
+function jumpRow(q, j, others, i) {
+  const c = j.condition || {};
+  let condHtml = "";
+  if (q.type === "single") {
+    condHtml = `若选择 <select class="j-opts" data-i="${i}">${(q.options || []).map(o =>
+      `<option value="${esc(o.oid)}" ${c.option_id === o.oid ? "selected" : ""}>${esc(o.text)}</option>`).join("")}</select>`;
+  } else if (q.type === "multiple") {
+    const picked = c.contains || c.not_contains || [];
+    condHtml = `选择${c.not_contains && c.not_contains.length ? "不包含" : "包含"} <select class="j-opts" data-i="${i}" multiple size="3">${(q.options || []).map(o =>
+      `<option value="${esc(o.oid)}" ${picked.includes(o.oid) ? "selected" : ""}>${esc(o.text)}</option>`).join("")}</select>`;
+  } else if (q.type === "number") {
+    condHtml = `数字 <select class="j-op" data-i="${i}">${["==", "!=", ">", ">=", "<", "<="].map(op =>
+      `<option ${c.op === op ? "selected" : ""}>${op}</option>`).join("")}</select>
+      <input type="number" class="j-val" data-i="${i}" value="${c.value ?? ""}" style="width:90px;">`;
+  }
+  return `<div class="row" style="margin:6px 0;">
+    <span class="grow">${condHtml}</span>
+    <span>→ 跳转到 <select class="j-target" data-i="${i}">${others.map(oq =>
+      `<option value="${esc(oq.qid)}" ${j.target_qid === oq.qid ? "selected" : ""}>${esc(oq.title)}</option>`).join("")}</select></span>
+    <button class="btn small danger" onclick="this.parentNode.remove()">删</button>
+  </div>`;
+}
+function addJump(qid) {
+  const q = SURVEY.questions.find(x => x.qid === qid);
+  const others = (SURVEY.questions || []).filter(x => x.qid !== qid);
+  q.jumps = q.jumps || [];
+  q.jumps.push({ condition: {}, target_qid: others[0] ? others[0].qid : "" });
+  renderJumps(qid);
+}
+
+async function saveQuestion(qid) {
+  const q = SURVEY.questions.find(x => x.qid === qid);
+  const data = {
+    qid: qid, type: q.type,
+    title: document.getElementById("e-title").value.trim(),
+    required: document.getElementById("e-required").checked,
+    validation: {}, jumps: []
+  };
+  if (q.type === "single" || q.type === "multiple") {
+    data.options = Array.from(document.querySelectorAll("#e-options .option-line")).map((row, i) => ({
+      oid: row.dataset.oid || ("o" + (i + 1)), text: row.querySelector(".opt-text").value.trim()
+    })).filter(o => o.text);
+    if (q.type === "multiple") {
+      const g = id => { const v = document.getElementById(id).value; return v === "" ? null : Number(v); };
+      const mn = g("e-min"), mx = g("e-max"), ex = g("e-exact");
+      if (mn !== null) data.validation.min_select = mn;
+      if (mx !== null) data.validation.max_select = mx;
+      if (ex !== null) data.validation.exact_select = ex;
+    }
+  } else if (q.type === "text") {
+    const mn = document.getElementById("e-min").value, mx = document.getElementById("e-max").value;
+    if (mn !== "") data.validation.min_len = Number(mn);
+    if (mx !== "") data.validation.max_len = Number(mx);
+  } else if (q.type === "number") {
+    const mn = document.getElementById("e-min").value, mx = document.getElementById("e-max").value;
+    if (mn !== "") data.validation.min = Number(mn);
+    if (mx !== "") data.validation.max = Number(mx);
+    if (document.getElementById("e-int").checked) data.validation.integer = true;
+  }
+  // 跳转
+  const rows = Array.from(document.querySelectorAll("#jump-rows > div"));
+  for (const row of rows) {
+    const i = row.querySelector(".j-target").dataset.i;
+    const target = row.querySelector(".j-target").value;
+    if (!target) continue;
+    if (q.type === "single") {
+      data.jumps.push({ condition: { option_id: row.querySelector(".j-opts").value }, target_qid: target });
+    } else if (q.type === "multiple") {
+      const picked = Array.from(row.querySelector(".j-opts").selectedOptions).map(o => o.value);
+      if (!picked.length) continue;
+      data.jumps.push({ condition: { contains: picked }, target_qid: target });
+    } else if (q.type === "number") {
+      const val = Number(row.querySelector(".j-val").value);
+      if (isNaN(val)) continue;
+      data.jumps.push({ condition: { op: row.querySelector(".j-op").value, value: val }, target_qid: target });
+    }
+  }
+  try {
+    await api(`/api/surveys/${sid}/questions/${qid}`, "PUT", data);
+    await load();
+  } catch (e) { showErr(e.message); }
+}
+
+async function delQuestion(qid) {
+  if (!confirm("删除该题目？相关跳转规则也会失效。")) return;
+  try { await api(`/api/surveys/${sid}/questions/${qid}`, "DELETE"); await load(); }
+  catch (e) { showErr(e.message); }
+}
+
+// ---------- 问卷设置 ----------
+async function saveMeta() {
+  const body = {
+    title: document.getElementById("fTitle").value.trim(),
+    description: document.getElementById("fDesc").value.trim(),
+    allow_anonymous: document.getElementById("fAnon").checked,
+    deadline: document.getElementById("fDeadline").value || null
+  };
+  try { await api(`/api/surveys/${sid}`, "PUT", body); await load(); }
+  catch (e) { showErr(e.message); }
+}
+async function pub() {
+  try { await api(`/api/surveys/${sid}/publish`, "POST"); await load(); }
+  catch (e) { showErr(e.message); }
+}
+async function closeIt() {
+  try { await api(`/api/surveys/${sid}/close`, "POST"); await load(); }
+  catch (e) { showErr(e.message); }
+}
+function showErr(msg) {
+  const el = document.getElementById("err");
+  el.textContent = msg; el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 5000);
+}
+load();
+</script>
+</body>
+</html>

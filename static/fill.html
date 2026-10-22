@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>填写问卷</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="card" id="box" style="max-width:640px;margin:40px auto;">
+    <div id="top">
+      <h1 id="sTitle">问卷</h1>
+      <p class="muted" id="sDesc"></p>
+      <p class="muted" id="sMeta"></p>
+    </div>
+    <div id="body"></div>
+  </div>
+</div>
+<script src="/static/js/common.js"></script>
+<script>
+const sid = qs("sid");
+let SURVEY = null, answers = {}, visited = [];
+
+// ---------- 前端跳转引擎（与后端 app.py 保持一致） ----------
+function evaluateJump(q, answer) {
+  const rules = q.jumps || [];
+  if (!rules.length || answer === undefined) return null;
+  if (q.type === "single") {
+    const sel = new Set(answer.option_ids || []);
+    for (const r of rules) if (sel.has(r.condition.option_id)) return r.target_qid;
+  } else if (q.type === "multiple") {
+    const sel = new Set(answer.option_ids || []);
+    for (const r of rules) {
+      const c = r.condition || {};
+      if (c.contains && c.contains.every(x => sel.has(x))) return r.target_qid;
+      if (c.not_contains && c.not_contains.every(x => !sel.has(x))) return r.target_qid;
+    }
+  } else if (q.type === "number") {
+    const val = answer.number;
+    for (const r of rules) {
+      const c = r.condition || {};
+      const ok = { "==": val === c.value, "!=": val !== c.value, ">": val > c.value,
+                   ">=": val >= c.value, "<": val < c.value, "<=": val <= c.value }[c.op];
+      if (ok) return r.target_qid;
+    }
+  }
+  return null;
+}
+
+// ---------- 前端校验（与后端 app.py 保持一致） ----------
+function validateLocal(q, answer) {
+  const v = q.validation || {};
+  if (q.type === "single") {
+    const n = (answer.option_ids || []).length;
+    if (q.required && !n) return "该题为必答题";
+    if (n > 1) return "单选题只能选择一个选项";
+  } else if (q.type === "multiple") {
+    const n = (answer.option_ids || []).length;
+    if (q.required && !n) return "该题为必答题";
+    if (v.exact_select !== undefined && n !== v.exact_select) return `必须选择 ${v.exact_select} 个选项（当前 ${n} 个）`;
+    if (v.min_select !== undefined && n < v.min_select) return `至少选择 ${v.min_select} 个选项（当前 ${n} 个）`;
+    if (v.max_select !== undefined && n > v.max_select) return `最多选择 ${v.max_select} 个选项（当前 ${n} 个）`;
+  } else if (q.type === "text") {
+    const t = (answer.text || "").trim();
+    if (q.required && !t) return "该题为必答题";
+    const len = t.length;
+    if (v.min_len !== undefined && len < v.min_len) return `最少输入 ${v.min_len} 个字（当前 ${len} 字）`;
+    if (v.max_len !== undefined && len > v.max_len) return `最多输入 ${v.max_len} 个字（当前 ${len} 字）`;
+  } else if (q.type === "number") {
+    const val = answer.number;
+    if (val === undefined || val === null || val === "") {
+      if (q.required) return "该题为必答题";
+      return "";
+    }
+    const n = Number(val);
+    if (isNaN(n)) return "请输入数字";
+    if (v.integer && !Number.isInteger(n)) return "必须为整数";
+    if (v.min !== undefined && n < v.min) return `不能小于 ${v.min}`;
+    if (v.max !== undefined && n > v.max) return `不能大于 ${v.max}`;
+  }
+  return "";
+}
+
+// ---------- 作答流程 ----------
+async function load() {
+  try {
+    const d = await api(`/api/surveys/${sid}/public`);
+    SURVEY = d.survey;
+  } catch (e) {
+    document.getElementById("body").innerHTML =
+      `<div class="alert error">${esc(e.message)}</div>`;
+    return;
+  }
+  document.getElementById("sTitle").textContent = SURVEY.title;
+  document.getElementById("sDesc").textContent = SURVEY.description || "";
+  const meta = [];
+  if (SURVEY.allow_anonymous) meta.push("匿名填写");
+  if (SURVEY.deadline) meta.push("截止时间：" + fmtDate(SURVEY.deadline));
+  document.getElementById("sMeta").textContent = meta.join(" · ");
+  if (!SURVEY.questions.length) {
+    document.getElementById("body").innerHTML =
+      `<div class="alert info">该问卷还没有题目。</div>`;
+    return;
+  }
+  // 从第一题开始
+  visited = [];
+  showQuestion(0);
+}
+function currentIndex() { return visited[visited.length - 1] || 0; }
+
+function showQuestion(idx) {
+  const qs2 = SURVEY.questions;
+  if (idx >= qs2.length) { finish(); return; }
+  visited.push(idx);
+  const q = qs2[idx];
+  const body = document.getElementById("body");
+  body.innerHTML = `
+    <div class="q-block">
+      <div class="q-title" style="font-size:16px;margin-bottom:10px;">
+        ${qs2.indexOf(q) + 1}. ${esc(q.title)}
+        ${q.required ? '<span class="tag">必答</span>' : ""}
+      </div>
+      ${renderInput(q)}
+      <div class="alert error hidden" id="qerr"></div>
+    </div>
+    <div class="fill-nav">
+      <span></span>
+      <button class="btn primary" id="btnNext">${idx === qs2.length - 1 ? "提交问卷" : "下一题"}</button>
+    </div>`;
+  const btn = document.getElementById("btnNext");
+  btn.onclick = () => {
+    const ans = collectAnswer(q);
+    const msg = validateLocal(q, ans);
+    if (msg) { const el = document.getElementById("qerr"); el.textContent = msg; el.classList.remove("hidden"); return; }
+    answers[q.qid] = ans;
+    const target = evaluateJump(q, ans);
+    let next = idx + 1;
+    if (target) {
+      const ti = qs2.findIndex(x => x.qid === target);
+      if (ti >= 0) next = ti;
+    }
+    showQuestion(next);
+  };
+}
+function renderInput(q) {
+  if (q.type === "single" || q.type === "multiple") {
+    const type = q.type === "single" ? "radio" : "checkbox";
+    return `<div>${(q.options || []).map(o =>
+      `<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:6px 0;">
+        <input type="${type}" name="opt" value="${esc(o.oid)}" style="width:auto;"> ${esc(o.text)}
+      </label>`).join("")}</div>`;
+  }
+  if (q.type === "text") return `<input type="text" id="inp">`;
+  if (q.type === "number") return `<input type="number" id="inp" step="any">`;
+  return "";
+}
+function collectAnswer(q) {
+  if (q.type === "single" || q.type === "multiple") {
+    const checked = Array.from(document.querySelectorAll('input[name="opt"]:checked')).map(x => x.value);
+    return { option_ids: checked };
+  }
+  const val = document.getElementById("inp").value;
+  if (q.type === "text") return { text: val };
+  return { number: val === "" ? null : Number(val) };
+}
+async function finish() {
+  const body = document.getElementById("body");
+  body.innerHTML = `<div class="alert info">已完成全部题目，正在提交…</div>`;
+  const payload = Object.keys(answers).map(qid => ({ qid, ...answers[qid] }));
+  try {
+    await api(`/api/surveys/${sid}/responses`, "POST", { answers: payload });
+    body.innerHTML = `<div class="alert info" style="font-size:16px;">✅ 提交成功，感谢您的填写！</div>
+      <p class="muted center">如需再次填写，刷新页面即可。</p>`;
+    document.getElementById("top").innerHTML = "";
+  } catch (e) {
+    body.innerHTML = `<div class="alert error">${esc(e.message)}</div>
+      <button class="btn primary" onclick="location.reload()">重新填写</button>`;
+  }
+}
+load();
+</script>
+</body>
+</html>
